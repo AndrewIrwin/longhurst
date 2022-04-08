@@ -1,0 +1,180 @@
+---
+title: "Longhurst maps"
+author: "Andrew Irwin"
+date: '2022-04-08'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sf)
+library(sp)
+library(ggmap)
+library(rnaturalearth)
+library(rnaturalearthdata)
+# discussion of slow map plotting in Mac versions
+# https://github.com/tidyverse/ggplot2/issues/2655
+```
+
+Read shapefiles
+
+```{r}
+longhurst <- st_read("shapefile/Longhurst_world_v4_2010.shp")
+longhurst$ProvCode  = as.character(longhurst$ProvCode)
+longhurst$ProvCode[longhurst$ProvCode == "PEQD"] = "PEOD"  # typo
+```
+
+Get map data.
+
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+# world <- ne_countries(scale = "medium", returnclass = "sf", type="map_units")
+longhurst_sf <- st_sf(longhurst)
+# longhurst_4326 <- st_transform(longhurst, 4326)
+```
+
+Pick a few regions.
+
+```{r}
+p0 <- ggplot(data = world) + geom_sf(fill="#A0A0A0", color="#808080") +
+  geom_sf(data = longhurst[52,], size = 1, fill = "red", color = NA) + 
+  geom_sf(data = longhurst[40:50,], size = 1, fill = "black", color = NA) + 
+  geom_sf(data = longhurst[51,], size = 1, fill = "blue", color = NA) + 
+  ggtitle("Longhurst") + 
+  coord_sf() +
+  theme_bw() + 
+  theme(panel.border =  element_blank()) + 
+  # coord_sf(crs = "+proj=laea +lat_0=-90 +lon_0=0") # S pole
+  # coord_sf(crs = "+proj=ortho +lat_0=90") # N pole
+  # coord_sf(crs = "+proj=moll +lon_0=0") # Mollwiede, globe
+  coord_sf(crs = "+proj=eck4")
+  # coord_sf(crs = 4326)
+ggsave('map0.pdf', p0)
+ggsave('map0.png', p0)
+```
+
+Zoom in on a region.
+
+```{r}
+p2 <- ggplot(data = world) + geom_sf(fill="#A0A0A0", color="#808080") +
+  # geom_sf(data = longhurst2 %>% mutate(geometry = st_transform(geometry, "+proj=eck4 +lat_0=+0 +lon_0=0")),
+  geom_sf(data = longhurst2,
+          size = 0.5, color = NA, aes(fill=ProvCode)) + 
+  scale_fill_brewer(palette = "Set3") + 
+  # coord_sf(crs = "+proj=eck4") +  # projecting and cropping a map is hard...
+  coord_sf(crs = 4326) +
+  xlim(-80,10) + ylim(25, 75) +
+  # coord_sf(crs = "+proj=eck4 +lat_0=+0 +lon_0=0") # slow and fails.
+  theme_void()
+ggsave("map2.pdf", p2)
+
+```
+
+Project and zoom using st_crop. 
+See https://www.r-bloggers.com/2019/04/zooming-in-on-maps-with-sf-and-ggplot2/
+
+```{r}
+# w2 <- world %>% st_crop(ymin = 25, ymax = 75, xmin = -80, xmax = 10)  # spherical geometry errors
+crop_region <- st_sfc(st_point(c(-80, 25)), st_point(c(10, 75)), crs = 4326)
+target_crs = "+proj=eck4 +lat_0=+00 +lon_0=0"  
+# eck4, moll have trouble with lines breaking at edges depending on lon_0 
+crop_region_t <- st_transform(crop_region, crs = target_crs)
+crop_region_c <- st_coordinates(crop_region_t)
+p2 <- ggplot(data = world) + 
+  geom_sf(fill="#A0A0A0", color=NA) + # "#808080") +
+  geom_sf(data = longhurst2,
+          size = 0.5, color = NA, aes(fill=ProvCode)) + 
+  scale_fill_brewer(palette = "Set3") + 
+  coord_sf(crs = target_crs, xlim = crop_region_c[,"X"],
+                             ylim = crop_region_c[,"Y"]) +  
+  theme_void()
+ggsave("map2.pdf", p2)
+
+```
+
+Add points to a plot. Not working.
+
+```{r}
+db <- tibble(latitude = runif(20, 20, 75),
+             longitude = runif(20, -80, 20))
+```
+
+
+```{r}
+longhurst_t <- st_transform(longhurst, 4326)
+# points1_t <- st_transform(as.matrix(db[1:10, c("longitude", "latitude")]), 2163)  # doesn't work
+tidyLatLong <- function(db) {
+  points1 <- db[ , c("longitude", "latitude")]
+  names(points1) <- c("x", "y")
+  points1_sf <- do.call("st_sfc",
+                        c(lapply(1:nrow(points1), function(i) {st_point(as.numeric(points1[i, ]))}), list("crs" = 4326))) 
+  # points1_t <- st_transform(points1_sf, 4326)
+  points1_sf
+}
+points1_t <- tidyLatLong(db)
+db %>% cbind(points1_t) %>%
+  mutate(longhurst = apply(
+    st_intersects(longhurst_t, geometry, sparse=FALSE),
+    2,
+    function(col) paste0(longhurst_t$ProvCode[which(col)], collapse=",")
+  )) -> db
+```
+
+
+```{r}
+ggplot(data = world) + geom_sf(fill="#E0E0E0", color="#E0E0E0") +
+  geom_sf(data = db %>% distinct(latitude, longitude, .keep_all = TRUE), # %>% sample_n(100),
+          aes(geometry = geometry_eck4, color=longhurst)) +
+  geom_sf(data = longhurst, fill=NA) +
+  coord_sf(crs = "+proj=eck4 +lat_0=+0 +lon_0=0") +
+    theme_bw() -> p
+ggsave("map_points.pdf", p)
+```
+
+
+
+
+
+## Classify points
+
+Move to separate file.
+Improve code.
+
+
+How to determine which region a particular lat, long belongs to?
+
+```{r}
+points1 <- st_multipoint(as.matrix(db[1:10, c("longitude", "latitude")]), "XY")
+longhurst_sf <- st_sf(longhurst)
+longhurst_sf %>% select(ProvCode, ProvDescr)
+st_within(longhurst, points1)
+```
+
+WGS84 (world geodetic system 1984) has CRS code 4326
+US equal area atlas has CRS code 2163
+Pseudo mercator has CRS code 3857 and used by google maps, etc.
+
+```{r}
+longhurst_t <- st_transform(longhurst, 4326)
+# points1_t <- st_transform(as.matrix(db[1:10, c("longitude", "latitude")]), 2163)  # doesn't work
+tidyLatLong <- function(db) {
+  points1 <- db[ , c("longitude", "latitude")]
+  names(points1) <- c("x", "y")
+  points1_sf <- do.call("st_sfc",
+                        c(lapply(1:nrow(points1), function(i) {st_point(as.numeric(points1[i, ]))}), list("crs" = 4326))) 
+  # points1_t <- st_transform(points1_sf, 4326)
+  points1_sf
+}
+points1_t <- tidyLatLong(db)
+db %>% cbind(points1_t) %>%
+  mutate(longhurst = apply(
+    st_intersects(longhurst_t, geometry, sparse=FALSE),
+    2,
+    function(col) paste0(longhurst_t$ProvCode[which(col)], collapse=",")
+  )) -> db
+```
+
+
+
+
